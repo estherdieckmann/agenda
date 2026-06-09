@@ -2072,8 +2072,9 @@ function renderHeute() {
   const soon = state.tasks.filter(t => {
     if (!getTaskOpen(t) || !t.targetDate) return false;
     if (isOverdue(t) || isDueToday(t)) return false;
-    const target = new Date(t.targetDate + 'T00:00:00');
-    const diff = (target - now) / (1000*60*60*24);
+    const target = parseLocalDate(t.targetDate);
+    const todayStart = new Date(); todayStart.setHours(0,0,0,0);
+    const diff = (target - todayStart) / (1000*60*60*24);
     return diff <= 7 && matchesSearch(t);
   }).sort((a, b) => (a.targetDate || '').localeCompare(b.targetDate || ''));
 
@@ -2311,13 +2312,16 @@ function closeDayModal() { document.getElementById('dayModal').classList.remove(
 /* ===== TASK RENDER ===== */
 function renderTask(t, draggable) {
   const now = new Date();
-  const target = t.targetDate ? new Date(t.targetDate + 'T23:59:59') : null;
+  // Use parseLocalDate to avoid UTC timezone shift
+  const target = t.targetDate ? parseLocalDate(t.targetDate) : null;
   let overdueClass = '', dateClass = '', dateText = '';
 
   if (target && t.status !== 'erledigt') {
-    const diffMs = target - now;
-    const diffDays = Math.ceil(diffMs / (1000*60*60*24));
-    if (diffMs < 0) {
+    // Compare dates by day, not by milliseconds
+    const todayStart = new Date(); todayStart.setHours(0,0,0,0);
+    const targetStart = new Date(target); targetStart.setHours(0,0,0,0);
+    const diffDays = Math.round((targetStart - todayStart) / (1000*60*60*24));
+    if (diffDays < 0) {
       overdueClass = 'overdue'; dateClass = 'overdue';
       dateText = `Überfällig (${Math.abs(diffDays)} ${Math.abs(diffDays) === 1 ? 'Tag' : 'Tage'})`;
     } else if (diffDays === 0) { dateClass = 'due-soon'; dateText = 'Heute fällig'; }

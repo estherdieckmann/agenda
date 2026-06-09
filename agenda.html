@@ -820,6 +820,7 @@
       <button class="top-btn" onclick="toggleTheme()" title="Dark Mode"><span class="ico" id="themeIcon">☾</span></button>
       <button class="top-btn" onclick="openSettings()" title="Einstellungen">⚙</button>
       <button class="top-btn" onclick="openExport()" title="Export / Backup">⇩</button>
+      <button class="top-btn" onclick="doAgendaSignOut()" title="Abmelden" style="opacity:0.7">⏻</button>
     </div>
   </div>
 
@@ -2758,6 +2759,16 @@ function renderParsedPreview(p) {
 }
 
 
+function doAgendaSignOut() {
+  if(window._signOut && window._auth) {
+    window._signOut(window._auth).then(() => {
+      document.getElementById('loginOverlay').style.display = 'flex';
+      document.getElementById('agendaLoginEmail').value = '';
+      document.getElementById('agendaLoginPassword').value = '';
+    });
+  }
+}
+
 /* ============================================================
    VOICE / SPEECH RECOGNITION
    ============================================================
@@ -2998,6 +3009,7 @@ if (VOICE_SUPPORTED) showVoiceButtons();
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
   import { getFirestore } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+  import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 
   const firebaseConfig = {
     apiKey: "AIzaSyBsNb7Ca80tlk075mBoHffH3jlc_M1o6kQ",
@@ -3012,6 +3024,9 @@ if (VOICE_SUPPORTED) showVoiceButtons();
 
   const app = initializeApp(firebaseConfig);
   window.db = getFirestore(app);
+  const auth = getAuth(app);
+  window._auth = auth;
+  window._signOut = signOut;
 
   // Expose Firestore functions to classic script
   window._fsDoc = doc;
@@ -3033,12 +3048,19 @@ if (VOICE_SUPPORTED) showVoiceButtons();
 
   window._firebaseReady = true;
 
-  // Kick off the app
-  updateNotifBanner();
-  loadAll();
-  if (VOICE_SUPPORTED) showVoiceButtons();
-  setInterval(checkReminders, 30000);
-  setTimeout(checkReminders, 1500);
+  // Auth state - show login or app
+  onAuthStateChanged(auth, user => {
+    if(user) {
+      document.getElementById('loginOverlay').style.display = 'none';
+      updateNotifBanner();
+      loadAll();
+      if (VOICE_SUPPORTED) showVoiceButtons();
+      setInterval(checkReminders, 30000);
+      setTimeout(checkReminders, 1500);
+    } else {
+      document.getElementById('loginOverlay').style.display = 'flex';
+    }
+  });
   ['editModal', 'settingsModal', 'templatesModal', 'exportModal', 'dayModal'].forEach(id => {
     document.getElementById(id).addEventListener('click', (e) => {
       if (e.target.id === id) {
@@ -3051,6 +3073,42 @@ if (VOICE_SUPPORTED) showVoiceButtons();
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); addTask(); }
   });
   document.getElementById('heroBlock').style.display = state.currentView === 'kategorien' ? '' : 'none';
+</script>
+
+<!-- Login Overlay -->
+<div id="loginOverlay" style="display:flex;position:fixed;inset:0;background:#1a1a1a;z-index:2000;flex-direction:column;align-items:center;justify-content:center;padding:32px 24px;">
+  <div style="text-align:center;margin-bottom:40px">
+    <div style="width:40px;height:40px;background:var(--accent);color:#1a1a1a;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:20px;border-radius:3px;margin:0 auto 12px">D</div>
+    <div style="font-size:18px;font-weight:700;color:white;letter-spacing:1px">DIECKMANN</div>
+    <div style="font-size:11px;color:var(--accent);letter-spacing:3px;margin-top:3px">AGENDA</div>
+  </div>
+  <div style="width:100%;max-width:320px">
+    <input type="email" id="agendaLoginEmail" placeholder="E-Mail" autocomplete="email"
+      style="width:100%;padding:13px 14px;border:1.5px solid rgba(255,255,255,0.15);border-radius:4px;background:rgba(255,255,255,0.08);color:white;font-size:15px;font-family:inherit;outline:none;margin-bottom:8px;display:block">
+    <input type="password" id="agendaLoginPassword" placeholder="Passwort" autocomplete="current-password"
+      style="width:100%;padding:13px 14px;border:1.5px solid rgba(255,255,255,0.15);border-radius:4px;background:rgba(255,255,255,0.08);color:white;font-size:15px;font-family:inherit;outline:none;margin-bottom:10px;display:block">
+    <p id="agendaLoginError" style="color:#e57373;font-size:12px;margin-bottom:10px;display:none">E-Mail oder Passwort falsch</p>
+    <button onclick="doAgendaLogin()" style="width:100%;padding:14px;background:var(--accent);color:#1a1a1a;border:none;border-radius:4px;font-size:15px;font-weight:700;font-family:inherit;cursor:pointer">
+      Anmelden
+    </button>
+  </div>
+</div>
+
+<script>
+async function doAgendaLogin() {
+  const email = document.getElementById('agendaLoginEmail').value.trim();
+  const password = document.getElementById('agendaLoginPassword').value;
+  document.getElementById('agendaLoginError').style.display = 'none';
+  try {
+    const { signInWithEmailAndPassword } = await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js');
+    await signInWithEmailAndPassword(window._auth, email, password);
+  } catch(e) {
+    document.getElementById('agendaLoginError').style.display = 'block';
+  }
+}
+document.getElementById('agendaLoginPassword').addEventListener('keydown', e => {
+  if(e.key === 'Enter') doAgendaLogin();
+});
 </script>
 
 </body>

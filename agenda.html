@@ -1012,6 +1012,10 @@
             <option value="weekly">Wöchentlich</option>
             <option value="biweekly">Alle 2 Wochen</option>
             <option value="monthly">Monatlich</option>
+            <option value="monthly_3rd_mon">Jeden 3. Montag im Monat</option>
+            <option value="monthly_last_tue">Jeden letzten Dienstag im Monat</option>
+            <option value="monthly_last_fri">Jeden letzten Freitag im Monat</option>
+            <option value="monthly_1st_mon">Jeden 1. Montag im Monat</option>
             <option value="quarterly">Quartalsweise</option>
             <option value="yearly">Jährlich</option>
           </select>
@@ -1175,7 +1179,7 @@ const CAT_ORDER = ['privat', 'hvh', 'dieckmann_op', 'dieckmann_strat'];
 const PRIO_ORDER = { kritisch: 0, hoch: 1, mittel: 2, niedrig: 3 };
 const PRIO_LABEL = { kritisch: 'Kritisch', hoch: 'Hoch', mittel: 'Mittel', niedrig: 'Niedrig' };
 const STATUS_LABEL = { offen: 'Offen', in_arbeit: 'In Arbeit', wartet: 'Wartet auf', erledigt: 'Erledigt' };
-const RECURRING_LABEL = { daily: 'Täglich', weekly: 'Wöchentlich', biweekly: 'Alle 2 Wochen', monthly: 'Monatlich', quarterly: 'Quartalsweise', yearly: 'Jährlich' };
+const RECURRING_LABEL = { daily: 'Täglich', weekly: 'Wöchentlich', biweekly: 'Alle 2 Wochen', monthly: 'Monatlich', monthly_3rd_mon: '3. Montag/Monat', monthly_last_tue: 'Letzter Di/Monat', monthly_last_fri: 'Letzter Fr/Monat', monthly_1st_mon: '1. Montag/Monat', quarterly: 'Quartalsweise', yearly: 'Jährlich' };
 
 const TEMPLATES = [
   {
@@ -1261,18 +1265,10 @@ const TEMPLATES = [
 ];
 
 
-  // localStorage shim (replaces Claude artifact storage)
-  window.storage = {
-    get: async (k) => { const v = localStorage.getItem(k); return v ? { value: v } : null; },
-    set: async (k, v) => { localStorage.setItem(k, v); return { value: v }; },
-    delete: async (k) => { localStorage.removeItem(k); return { deleted: true }; },
-    list: async () => ({ keys: Object.keys(localStorage) })
-  };
-
   /* ===== STATE ===== */
 let state = {
   tasks: [],
-  team: ['Lea', 'Laura', 'Sami', 'Shejla', 'Edina'],
+  team: ['Arzu', 'Edina', 'Esther', 'Inge', 'Laura', 'Lea', 'Malte', 'Niko', 'Sami', 'Shejla'],
   currentView: 'heute',
   searchQuery: '',
   filterCat: 'all',
@@ -1285,39 +1281,31 @@ let state = {
 let editingId = null;
 let dragSrcId = null;
 
-/* ===== STORAGE ===== */
+/* ===== FIREBASE STORAGE ===== */
+// db is set globally via window.db from the Firebase module script
+Object.defineProperty(window, 'db', {
+  get() { return window._db; },
+  set(v) { window._db = v; }
+});
+
 async function loadAll() {
-  // Load tasks (with migration from v1)
-  try {
-    let res = await window.storage.get('todo_tasks_v2');
-    if (res && res.value) {
-      state.tasks = JSON.parse(res.value);
-    } else {
-      // try v1 migration
-      try {
-        const v1 = await window.storage.get('todo_tasks_v1');
-        if (v1 && v1.value) {
-          state.tasks = JSON.parse(v1.value);
-        }
-      } catch (e) {}
-    }
-  } catch (e) { state.tasks = []; }
+  // Show loading state
+  document.getElementById('viewContainer').innerHTML = '<div class="loading">Verbinde mit Datenbank…</div>';
 
-  // migrate fields
-  state.tasks = state.tasks.map(migrateTask);
-
-  // Load settings
+  // Load settings from localStorage (lightweight, device-specific ok)
   try {
-    const s = await window.storage.get('todo_settings_v1');
-    if (s && s.value) {
-      const cfg = JSON.parse(s.value);
+    const s = localStorage.getItem('agenda_settings_v1');
+    if (s) {
+      const cfg = JSON.parse(s);
       if (cfg.team) state.team = cfg.team;
       if (typeof cfg.darkMode === 'boolean') state.darkMode = cfg.darkMode;
     }
   } catch (e) {}
 
   applyTheme();
-  render();
+
+  // Tasks come from Firestore via realtime listener
+  setupFirestoreListener();
 }
 
 function migrateTask(t) {
@@ -1345,34 +1333,57 @@ function migrateTask(t) {
   return t;
 }
 
+// saveTasks is now handled per-action via Firestore
+// Individual save functions below replace bulk saveTasks
+
+// Firestore functions - set from module script
+window._fsDoc = null;
+window._fsSetDoc = null;
+window._fsDeleteDoc = null;
+window._fsWriteBatch = null;
+
+async function saveTask(task) {
+  if (!window.db || !window._fsSetDoc) return;
+  try {
+    const clean = JSON.parse(JSON.stringify(task));
+    await window._fsSetDoc(window._fsDoc(window.db, 'agenda', task.id), clean);
+  } catch (e) { showToast('Speichern fehlgeschlagen'); console.error(e); }
+}
+
+async function deleteTaskFromDB(id) {
+  if (!window.db || !window._fsDeleteDoc) return;
+  try {
+    await window._fsDeleteDoc(window._fsDoc(window.db, 'agenda', id));
+  } catch (e) { showToast('Löschen fehlgeschlagen'); }
+}
+
 async function saveTasks() {
-  try { await window.storage.set('todo_tasks_v2', JSON.stringify(state.tasks)); }
-  catch (e) { showToast('Speichern fehlgeschlagen'); }
+  if (!window.db || !window._fsWriteBatch) return;
+  try {
+    const batch = window._fsWriteBatch(window.db);
+    state.tasks.forEach(task => {
+      const clean = JSON.parse(JSON.stringify(task));
+      batch.set(window._fsDoc(window.db, 'agenda', task.id), clean);
+    });
+    await batch.commit();
+  } catch (e) { showToast('Speichern fehlgeschlagen'); console.error(e); }
 }
 
-/* Test storage actually works (e.g. not blocked by private mode or sandbox) */
-async function verifyStorage() {
-  try {
-    const testKey = '__storage_test__';
-    await window.storage.set(testKey, 'ok');
-    const res = await window.storage.get(testKey);
-    await window.storage.delete(testKey);
-    if (!res || res.value !== 'ok') throw new Error('Storage liefert keine Werte zurück');
-    return true;
-  } catch (e) {
-    showToast('⚠ Speicher nicht verfügbar — Daten gehen beim Schließen verloren');
-    console.error('Storage verification failed:', e);
-    return false;
-  }
-}
+function verifyStorage() { return Promise.resolve(true); } // Firebase handles this
 
-async function saveSettingsData() {
+function saveSettingsData() {
   try {
-    await window.storage.set('todo_settings_v1', JSON.stringify({
+    localStorage.setItem('agenda_settings_v1', JSON.stringify({
       team: state.team,
       darkMode: state.darkMode
     }));
   } catch (e) {}
+}
+
+function setupFirestoreListener() {
+  // Called from module script after Firebase is ready
+  // window._setupListener is set by module script
+  if (window._setupListener) window._setupListener();
 }
 
 /* ===== UTILS ===== */
@@ -1393,15 +1404,20 @@ function isToday(date) {
   const t = new Date();
   return date.toDateString() === t.toDateString();
 }
+function parseLocalDate(dateStr) {
+  // Parse YYYY-MM-DD as local date (avoids UTC timezone shift)
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
 function isOverdue(t) {
   if (t.status === 'erledigt' || !t.targetDate) return false;
-  const target = new Date(t.targetDate + 'T23:59:59');
+  const target = parseLocalDate(t.targetDate);
+  target.setHours(23, 59, 59, 999);
   return target < new Date();
 }
 function isDueToday(t) {
   if (t.status === 'erledigt' || !t.targetDate) return false;
-  const target = new Date(t.targetDate + 'T00:00:00');
-  return isToday(target);
+  return isToday(parseLocalDate(t.targetDate));
 }
 function getTaskOpen(t) { return t.status !== 'erledigt'; }
 
@@ -1473,12 +1489,10 @@ function addTask() {
     completedAt: null
   };
   state.tasks.unshift(task);
-  // assign manualOrder higher than rest in same category
   reorderManualOrder(task.category);
-  saveTasks();
+  saveTask(task);
   ['newTitle', 'newDesc', 'newDate', 'newReminder'].forEach(id => document.getElementById(id).value = '');
   showToast('Aufgabe angelegt');
-  render();
 }
 
 function reorderManualOrder(cat) {
@@ -1493,16 +1507,16 @@ function toggleTaskStatus(id) {
   if (t.status === 'erledigt') {
     t.status = 'offen';
     t.completedAt = null;
+    saveTask(t);
   } else {
     t.status = 'erledigt';
     t.completedAt = new Date().toISOString();
-    // If recurring, create next instance
+    saveTask(t);
     if (t.recurring && t.targetDate) {
-      createRecurrenceFor(t);
+      const next = createRecurrenceFor(t);
+      if (next) saveTask(next);
     }
   }
-  saveTasks();
-  render();
 }
 
 function createRecurrenceFor(orig) {
@@ -1511,31 +1525,64 @@ function createRecurrenceFor(orig) {
   next.status = 'offen';
   next.completedAt = null;
   next.reminders = next.reminders.map(r => ({ at: r.at, shown: false }));
-  // advance dates
-  const baseDate = orig.targetDate ? new Date(orig.targetDate) : new Date();
+  const baseDate = orig.targetDate ? parseLocalDate(orig.targetDate) : new Date();
   const newDate = advanceDate(baseDate, orig.recurring);
   next.targetDate = newDate.toISOString().slice(0, 10);
-  // shift reminders proportionally to date diff
   const dayDiff = (newDate - baseDate) / (1000*60*60*24);
   next.reminders = next.reminders.map(r => {
     const old = new Date(r.at);
     old.setDate(old.getDate() + Math.round(dayDiff));
     return { at: old.toISOString().slice(0,16), shown: false };
   });
-  // reset subtask completion
   next.subtasks = next.subtasks.map(s => ({ ...s, done: false }));
+  next.createdAt = new Date().toISOString();
   state.tasks.unshift(next);
+  return next;
 }
 
+function getNthWeekdayOfMonth(year, month, weekday, nth) {
+  // weekday: 0=Sun,1=Mon...6=Sat; nth: 1-based
+  const d = new Date(year, month, 1);
+  let count = 0;
+  while (d.getMonth() === month) {
+    if (d.getDay() === weekday) { count++; if (count === nth) return new Date(d); }
+    d.setDate(d.getDate() + 1);
+  }
+  return null;
+}
+function getLastWeekdayOfMonth(year, month, weekday) {
+  const d = new Date(year, month + 1, 0); // last day of month
+  while (d.getDay() !== weekday) d.setDate(d.getDate() - 1);
+  return new Date(d);
+}
 function advanceDate(d, recur) {
   const x = new Date(d);
+  let y = x.getFullYear(), m = x.getMonth();
   switch (recur) {
     case 'daily': x.setDate(x.getDate() + 1); break;
     case 'weekly': x.setDate(x.getDate() + 7); break;
     case 'biweekly': x.setDate(x.getDate() + 14); break;
-    case 'monthly': x.setMonth(x.getMonth() + 1); break;
-    case 'quarterly': x.setMonth(x.getMonth() + 3); break;
-    case 'yearly': x.setFullYear(x.getFullYear() + 1); break;
+    case 'monthly': x.setMonth(m + 1); break;
+    case 'monthly_3rd_mon': {
+      const next = m + 1 > 11 ? new Date(y+1, 0, 1) : new Date(y, m+1, 1);
+      const r = getNthWeekdayOfMonth(next.getFullYear(), next.getMonth(), 1, 3);
+      return r || x;
+    }
+    case 'monthly_last_tue': {
+      const next = m + 1 > 11 ? new Date(y+1, 0, 1) : new Date(y, m+1, 1);
+      return getLastWeekdayOfMonth(next.getFullYear(), next.getMonth(), 2);
+    }
+    case 'monthly_last_fri': {
+      const next = m + 1 > 11 ? new Date(y+1, 0, 1) : new Date(y, m+1, 1);
+      return getLastWeekdayOfMonth(next.getFullYear(), next.getMonth(), 5);
+    }
+    case 'monthly_1st_mon': {
+      const next = m + 1 > 11 ? new Date(y+1, 0, 1) : new Date(y, m+1, 1);
+      const r = getNthWeekdayOfMonth(next.getFullYear(), next.getMonth(), 1, 1);
+      return r || x;
+    }
+    case 'quarterly': x.setMonth(m + 3); break;
+    case 'yearly': x.setFullYear(y + 1); break;
   }
   return x;
 }
@@ -1543,13 +1590,14 @@ function advanceDate(d, recur) {
 function deleteTask(id) {
   if (!confirm('Aufgabe wirklich löschen?')) return;
   state.tasks = state.tasks.filter(x => x.id !== id);
-  saveTasks(); render(); showToast('Gelöscht');
+  deleteTaskFromDB(id);
+  showToast('Gelöscht');
 }
 
 function snoozeTask(id, days) {
   const t = state.tasks.find(x => x.id === id);
   if (!t) return;
-  const base = t.targetDate ? new Date(t.targetDate) : new Date();
+  const base = t.targetDate ? parseLocalDate(t.targetDate) : new Date();
   base.setDate(base.getDate() + days);
   // if date is past, base from today
   const today = new Date(); today.setHours(0,0,0,0);
@@ -1558,8 +1606,7 @@ function snoozeTask(id, days) {
     base.setDate(base.getDate() + days);
   }
   t.targetDate = base.toISOString().slice(0, 10);
-  // also reset future reminders relative
-  saveTasks(); render();
+  saveTask(t);
   showToast(`Verschoben auf ${formatDate(base)}`);
   closeAllSnoozeMenus();
 }
@@ -1583,7 +1630,7 @@ function toggleSubtask(taskId, subId) {
   const s = t.subtasks.find(x => x.id === subId);
   if (!s) return;
   s.done = !s.done;
-  saveTasks(); render();
+  saveTask(t);
 }
 
 /* ===== EDIT MODAL ===== */
@@ -1768,9 +1815,8 @@ function saveEdit() {
   t.assignedTo = document.getElementById('editAssigned').value || null;
   // subtasks: filter empty titles
   t.subtasks = t.subtasks.filter(s => s.title.trim() !== '');
-  saveTasks();
+  saveTask(t);
   closeEditModal();
-  render();
   showToast('Gespeichert');
 }
 
@@ -1977,7 +2023,8 @@ function onDrop(ev, targetId) {
   list.splice(fromIdx, 1);
   list.splice(toIdx, 0, src);
   list.forEach((t, i) => t.manualOrder = i);
-  saveTasks(); render();
+  // Save reordered tasks
+  list.forEach(t => saveTask(t));
 }
 function onDragEnd(ev) {
   ev.target.classList.remove('dragging');
@@ -2937,29 +2984,69 @@ function commitQuickVoice() {
 
 /* ===== INIT ===== */
 updateNotifBanner();
-verifyStorage();
-loadAll();
+// Firebase initialized below via module script
+// loadAll() called after Firebase is ready
 if (VOICE_SUPPORTED) showVoiceButtons();
 
-setInterval(checkReminders, 30000);
-setTimeout(checkReminders, 1500);
+// Init handled by Firebase module script below
+</script>
 
-// modal backdrop close
-['editModal', 'settingsModal', 'templatesModal', 'exportModal', 'dayModal'].forEach(id => {
-  document.getElementById(id).addEventListener('click', (e) => {
-    if (e.target.id === id) {
-      document.getElementById(id).classList.remove('open');
-      if (id === 'editModal') editingId = null;
-    }
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getFirestore } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyBsNb7Ca80tlk075mBoHffH3jlc_M1o6kQ",
+    authDomain: "dieckmann-inventar.firebaseapp.com",
+    projectId: "dieckmann-inventar",
+    storageBucket: "dieckmann-inventar.firebasestorage.app",
+    messagingSenderId: "743786740762",
+    appId: "1:743786740762:web:1064e8ca4738ae8256e5a3"
+  };
+
+  import { collection, onSnapshot, query, orderBy, doc, setDoc, deleteDoc, writeBatch } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+  const app = initializeApp(firebaseConfig);
+  window.db = getFirestore(app);
+
+  // Expose Firestore functions to classic script
+  window._fsDoc = doc;
+  window._fsSetDoc = setDoc;
+  window._fsDeleteDoc = deleteDoc;
+  window._fsWriteBatch = writeBatch;
+
+  // Set up realtime listener
+  window._setupListener = () => {
+    const q = query(collection(window.db, 'agenda'), orderBy('createdAt', 'desc'));
+    onSnapshot(q, snap => {
+      state.tasks = snap.docs.map(d => migrateTask({ ...d.data() }));
+      render();
+    }, err => {
+      console.error('Firestore error:', err);
+      showToast('Verbindungsfehler');
+    });
+  };
+
+  window._firebaseReady = true;
+
+  // Kick off the app
+  updateNotifBanner();
+  loadAll();
+  if (VOICE_SUPPORTED) showVoiceButtons();
+  setInterval(checkReminders, 30000);
+  setTimeout(checkReminders, 1500);
+  ['editModal', 'settingsModal', 'templatesModal', 'exportModal', 'dayModal'].forEach(id => {
+    document.getElementById(id).addEventListener('click', (e) => {
+      if (e.target.id === id) {
+        document.getElementById(id).classList.remove('open');
+        if (id === 'editModal') editingId = null;
+      }
+    });
   });
-});
-
-document.getElementById('newTitle').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); addTask(); }
-});
-
-// Initial view setup
-document.getElementById('heroBlock').style.display = state.currentView === 'kategorien' ? '' : 'none';
+  document.getElementById('newTitle').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); addTask(); }
+  });
+  document.getElementById('heroBlock').style.display = state.currentView === 'kategorien' ? '' : 'none';
 </script>
 
 </body>
